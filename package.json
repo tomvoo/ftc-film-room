@@ -1,0 +1,9 @@
+{
+  "name": "ftc-film-room",
+  "version": "1.0.0",
+  "description": "Match video and scouting notes for an FTC team. No dependencies.",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "start": "node server.js", "test": "node test/smoke.mjs" }
+}

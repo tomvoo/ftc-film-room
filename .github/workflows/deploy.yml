@@ -1,0 +1,64 @@
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # lets the job sign in to Google Cloud without a stored key
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check
+        run: |
+          node --check server.js
+          node --check public/app.js
+          for f in lib/*.js; do node --check "$f"; done
+          bash -n deploy/gcp-deploy.sh deploy/gcp-update.sh deploy/vm-startup.sh
+      - name: End-to-end checks
+        run: |
+          DATA_DIR="$RUNNER_TEMP/fr" PORT=3999 ADMIN_PASSWORD=ci-password-123 node server.js > "$RUNNER_TEMP/server.log" 2>&1 &
+          sleep 2
+          node test/smoke.mjs http://localhost:3999 coach ci-password-123 || { cat "$RUNNER_TEMP/server.log"; exit 1; }
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read Google Cloud settings
+        id: cfg
+        run: |
+          source deploy/gcp.env
+          if [ -z "$GCP_PROJECT" ] || [ -z "$GCP_PROJECT_NUMBER" ]; then
+            echo "::notice::deploy/gcp.env has no Google Cloud project yet, so nothing was deployed."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "provider=projects/$GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/film-room" >> "$GITHUB_OUTPUT"
+            echo "account=film-room-deployer@$GCP_PROJECT.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: google-github-actions/auth@v2
+        if: steps.cfg.outputs.ready == 'true'
+        with:
+          workload_identity_provider: ${{ steps.cfg.outputs.provider }}
+          service_account: ${{ steps.cfg.outputs.account }}
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.cfg.outputs.ready == 'true'
+      - name: Deploy
+        if: steps.cfg.outputs.ready == 'true'
+        run: bash deploy/gcp-update.sh
